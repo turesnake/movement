@@ -1,0 +1,25 @@
+*.DS_Store
+*/.DS_Store
+*DailyLog
+/.vscode
+/build/
+/old/
+
+
+# Visual Studio
+.vs/
+out/
+install/
+
+# unity
+/Library/
+/Logs/
+/obj/
+/Temp/
+*.csproj
+*.sln
+
+
+
+
+

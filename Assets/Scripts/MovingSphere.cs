@@ -38,6 +38,9 @@ public class MovingSphere : MonoBehaviour
 	[SerializeField]
 	LayerMask stairsMask = -1;
 
+	[SerializeField]
+	Transform playerInputSpace = default; // 绑定 主相机
+
 	Rigidbody body;
     Vector3 velocity;
 	Vector3 desiredVelocity;
@@ -78,7 +81,24 @@ public class MovingSphere : MonoBehaviour
 		playerInput.y = Input.GetAxis("Vertical");
         playerInput = Vector2.ClampMagnitude(playerInput, 1f);
 
-        desiredVelocity = new Vector3(playerInput.x, 0f, playerInput.y) * maxSpeed;
+		if (playerInputSpace) 
+		{
+			// 玩家输入的运动方向 playerInput 现在位于 camera 空间内, 手动将其转换为 ws 表达;
+			// 就能实现 主观视角的 运动控制;
+			Vector3 forward = playerInputSpace.forward;
+			forward.y = 0f;
+			forward.Normalize();
+			Vector3 right = playerInputSpace.right;
+			right.y = 0f;
+			right.Normalize();
+
+			desiredVelocity = (forward * playerInput.y + right * playerInput.x) * maxSpeed;
+		}
+		else 
+		{
+			// 客观视角的运动控制
+        	desiredVelocity = new Vector3(playerInput.x, 0f, playerInput.y) * maxSpeed;
+		}
 
 		desiredJump |= Input.GetButtonDown("Jump"); // remains true
 

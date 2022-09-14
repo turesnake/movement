@@ -53,8 +53,8 @@ public class MovingSphere : MonoBehaviour
 
 	float minGroundDotProduct;
 	float minStairsDotProduct;
-	int stepsSinceLastGrounded;//腾空了几个 fixed帧;
-	int stepsSinceLastJump; 
+	int stepsSinceLastGrounded;	// 只要接触 ground, 此值始终为 0, 一旦离开 ground, 此值开始无限累加 (fixed update)
+	int stepsSinceLastJump;		// 每触发一次跳跃, 此值被清零, 然后无限累加 (fixed update)
 	
 
 
@@ -63,13 +63,16 @@ public class MovingSphere : MonoBehaviour
 		body = GetComponent<Rigidbody>();
 		OnValidate();
 
-		Time.fixedDeltaTime = 0.01f;
+		// 只有在 FixedUpdate() 调用时, 物理系统才会更新 pos, 所以此值过高时, 物体运动就会一卡一卡的;
+		Time.fixedDeltaTime = 0.05f;
+		//Time.timeScale = 0.8f; // 慢速播放
 	}
  
     
 
     void Update () 
     {
+		// ----------------- 接收 用户输入 -------------------
 		Vector2 playerInput;
         playerInput.x = Input.GetAxis("Horizontal");
 		playerInput.y = Input.GetAxis("Vertical");
@@ -79,13 +82,9 @@ public class MovingSphere : MonoBehaviour
 
 		desiredJump |= Input.GetButtonDown("Jump"); // remains true
 
-
-
 		GetComponent<Renderer>().material.SetColor(
 			"_BaseColor", OnGround ? Color.black : Color.white
 		);
-		
-
 	}
 
 
@@ -107,14 +106,12 @@ public class MovingSphere : MonoBehaviour
 
 	void OnCollisionEnter (Collision collision) 
 	{
-		//Debug.Log("enter");
 		EvaluateCollision(collision);
 	}
 
 
 	void OnCollisionStay (Collision collision) 
 	{
-		//Debug.Log("stay");
 		EvaluateCollision(collision);
 	}
 
@@ -125,20 +122,20 @@ public class MovingSphere : MonoBehaviour
 	}
 
 
+	// FixedUpdate() 每帧开始时被调用;
 	void UpdateState () 
 	{
 		stepsSinceLastGrounded += 1;
 		stepsSinceLastJump += 1;
 		velocity = body.velocity; // 这样就不会卡在墙边了;
 
-		// -1- 判定接触了 ground 时, 就不会出现 腾空
-		// -2- 只有腾空后, 才需要判断是否需要 snap to ground
-		// -3- 以上都不是时, 有可能被 卡在缝隙里了; 
+		// -1- 本帧 正在接触了 ground;
+		// -2- 本帧腾空了, 但被判定为: 需要 snap to ground;
+		// -3- 以上都不是时, 有可能被 卡在缝隙里了, 此时会将缝隙替换为一个 虚拟平面
 		if ( OnGround || SnapToGround() || CheckSteepContacts() ) 
 		{
 			stepsSinceLastGrounded = 0;
-			//jumpPhase = 0;
-			if (stepsSinceLastJump > 1) 
+			if (stepsSinceLastJump > 1) // 新的跳跃之后的 第2帧, (观察 stepsSinceLastJump 的累加位置)
 			{
 				jumpPhase = 0;
 			}
@@ -151,23 +148,29 @@ public class MovingSphere : MonoBehaviour
 		{
 			contactNormal = Vector3.up; // 服务于 空中跳跃
 		}
+
+		Log_In_FixedUpdate(); // tpr
 	}
 
 
 	void Jump() 
 	{
 		Vector3 jumpDirection;
-		if (OnGround) 
+		if (OnGround) // --- 从 ground 上跳跃
 		{
 			jumpDirection = contactNormal;
 		}
-		else if (OnSteep) 
+		else if (OnSteep) // --- 从 缝隙 中跳出来
 		{
 			jumpDirection = steepNormal;
+			jumpPhase = 0;
 		}
-		else if (jumpPhase < maxAirJumps) 
+		else if ( maxAirJumps > 0 && jumpPhase <= maxAirJumps) // --- 空中 N段跳
 		{
-			// 空中跳跃
+			if (jumpPhase == 0) 
+			{
+				jumpPhase = 1;
+			}
 			jumpDirection = contactNormal; // 此时此值为 up
 		}
 		else 
@@ -175,23 +178,25 @@ public class MovingSphere : MonoBehaviour
 			return;
 		}
 
-		//if ( OnGround || jumpPhase < maxAirJumps ) 
-		//{
-			stepsSinceLastJump = 0;
-			jumpPhase += 1;
-			
-			float jumpSpeed = Mathf.Sqrt(-2f * Physics.gravity.y * jumpHeight);
+		
+		stepsSinceLastJump = 0;
+		jumpPhase += 1;
+		
+		float jumpSpeed = Mathf.Sqrt(-2f * Physics.gravity.y * jumpHeight);
 
-			float alignedSpeed = Vector3.Dot(velocity, jumpDirection);
+		// 为支持 从墙壁上向 斜上方跳跃
+		jumpDirection = (jumpDirection + Vector3.up).normalized;
 
-			// 防止玩家通过两次 短间隔 的二连跳 来达到非常高的 上跳速度;
-			if (alignedSpeed > 0f) 
-			{
-				jumpSpeed = Mathf.Max(jumpSpeed - alignedSpeed, 0f);
-			}
+		float alignedSpeed = Vector3.Dot(velocity, jumpDirection);
 
-			velocity += jumpDirection * jumpSpeed;
-		//}
+		// 防止玩家通过两次 短间隔 的二连跳 来达到非常高的 上跳速度;
+		if (alignedSpeed > 0f) 
+		{
+			jumpSpeed = Mathf.Max(jumpSpeed - alignedSpeed, 0f);
+		}
+
+		velocity += jumpDirection * jumpSpeed;
+		
 	}
 
 
@@ -254,7 +259,8 @@ public class MovingSphere : MonoBehaviour
 	bool SnapToGround () 
 	{
 		// 如果腾空超过 1 个 fixed帧, 放弃 snap;
-		// stepsSinceLastJump 只有在 触发一次跳跃的头几帧会; 
+		// stepsSinceLastJump==1  其实就是 新跳跃的 第一帧 (跳跃帧)
+		// stepsSinceLastJump==2  新跳跃的第二帧;
 		if (stepsSinceLastGrounded > 1 || stepsSinceLastJump <= 2) 
 		{
 			return false;
@@ -315,6 +321,14 @@ public class MovingSphere : MonoBehaviour
 			}
 		}
 		return false;
+	}
+
+
+	void Log_In_FixedUpdate()
+	{
+		//Debug.Log( "stepsSinceLastJump = " + stepsSinceLastJump );
+		//Debug.Log("stepsSinceLastGrounded = " + stepsSinceLastGrounded);
+		//Debug.Log("jumpPhase = " + jumpPhase);
 	}
 
 

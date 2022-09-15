@@ -41,12 +41,14 @@ public class MovingSphere : MonoBehaviour
 	[SerializeField]
 	Transform playerInputSpace = default; // 绑定 主相机
 
-	Rigidbody body;
-    Vector3 velocity;
-	Vector3 desiredVelocity;
+	Rigidbody body, connectedBody, previousConnectedBody;
+    Vector3 velocity, desiredVelocity, connectionVelocity;
+	
 	Vector3 contactNormal, steepNormal;
 
 	Vector3 upAxis, rightAxis, forwardAxis;
+	Vector3 connectionWorldPosition, connectionLocalPosition;
+
 	bool desiredJump;
 
 	int jumpPhase;
@@ -172,7 +174,34 @@ public class MovingSphere : MonoBehaviour
 			contactNormal = upAxis; // 服务于 空中跳跃
 		}
 
+		// 如果本帧检测到 connectedBody
+		if (connectedBody) 
+		{
+			
+			if (connectedBody.isKinematic || connectedBody.mass >= body.mass) 
+			{
+				UpdateConnectionState();
+			}
+		}
+
 		Log_In_FixedUpdate(); // tpr
+	}
+
+	void UpdateConnectionState () 
+	{
+
+		// 只有当 本帧 和 上帧 接触同一个下方接触面时
+		if (connectedBody == previousConnectedBody) 
+		{
+			// 本帧 接触点的 运动向量
+			Vector3 connectionMovement =
+				connectedBody.position - connectionWorldPosition;
+			connectionVelocity = connectionMovement / Time.deltaTime;
+		}
+
+		// 否则, 若接触的不是同一个 connext plane, 则让 connectionVelocity 维持为 0;
+
+		connectionWorldPosition = connectedBody.position;
 	}
 
 
@@ -230,16 +259,23 @@ public class MovingSphere : MonoBehaviour
 		{
 			Vector3 normal = collision.GetContact(i).normal;
 			float upDot = Vector3.Dot(upAxis, normal);
+			// 确定此平面为 ground 或 stair
 			if (upDot >= minDot) 
 			{
 				groundContactCount += 1;
 				contactNormal += normal;
+				connectedBody = collision.rigidbody;
 			}
 			// 只要这个表面不是绝对向下的, 则都算是 steep 表面;
 			else if (upDot > -0.01f) 
 			{
 				steepContactCount += 1;
 				steepNormal += normal;
+
+				// 只有在没找到 ground 时, 才把 steep 当作 connectedBody
+				if (groundContactCount == 0) {
+					connectedBody = collision.rigidbody;
+				}
 			}
 
 		}
@@ -258,8 +294,13 @@ public class MovingSphere : MonoBehaviour
 		Vector3 xAxis = ProjectDirectionOnPlane(rightAxis, contactNormal);
 		Vector3 zAxis = ProjectDirectionOnPlane(forwardAxis, contactNormal);
 
-		float currentX = Vector3.Dot(velocity, xAxis);
-		float currentZ = Vector3.Dot(velocity, zAxis);
+
+		// 为何是 反方向速度呢, 因为这个值 要在后续运算中 "被减掉"
+        // 用这种不够直观的方式, 来叠加 "下方活动地面" 的运动速度
+		Vector3 relativeVelocity = velocity - connectionVelocity;
+
+		float currentX = Vector3.Dot(relativeVelocity, xAxis);
+		float currentZ = Vector3.Dot(relativeVelocity, zAxis);
 
 		float acceleration = OnGround ? maxAcceleration : maxAirAcceleration;
 		float maxSpeedChange = acceleration * Time.deltaTime;
@@ -275,7 +316,9 @@ public class MovingSphere : MonoBehaviour
 	void ClearState () 
 	{
 		groundContactCount = steepContactCount = 0;
-		contactNormal = steepNormal = Vector3.zero;
+		contactNormal = steepNormal = connectionVelocity = Vector3.zero;
+		previousConnectedBody = connectedBody;
+		connectedBody = null;
 	}
 
 	// 只有在本帧腾空时, 本函数才会被调用
@@ -321,6 +364,8 @@ public class MovingSphere : MonoBehaviour
 			velocity = (velocity - hit.normal * dot).normalized * speed;
 		}
 
+		// 把这个虚拟平面 当作 connectedBody;
+		connectedBody = hit.rigidbody;
 		return true;
 	}
 

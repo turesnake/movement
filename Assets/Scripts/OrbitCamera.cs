@@ -14,7 +14,7 @@ public class OrbitCamera : MonoBehaviour
 	float distance = 5f;
 
     [SerializeField, Min(0f)]
-	float focusRadius = 1f;
+	float focusRadius = 1f;// 若为 0, 相机始终盯着 本帧小球pos, 若大于0, 则盯着小球的 前帧pos 和 本帧pos 之间的某个pos;
 
     [SerializeField, Range(0f, 1f)]
 	float focusCentering = 0.5f; // 值越大, 物体停止后 相机跟随的速度越快
@@ -34,12 +34,22 @@ public class OrbitCamera : MonoBehaviour
 	[SerializeField]
 	LayerMask obstructionMask = -1; // 应该不包含 Details, 这样一些细节就不会被相机判定为墙体
 
+	[SerializeField, Min(0f)]
+	float upAlignmentSpeed = 360f;
 
+
+
+	// 相机旋转信息: 沿 x轴(right向量) 旋转多少度 (俯仰), 沿 y轴(up向量) 旋转多少度(偏航);
     Vector2 orbitAngles = new Vector2(45f, 0f);// 沿 x轴 向下旋转 45度, 俯视;
+
     Vector3 focusPoint, previousFocusPoint; // 本帧/上一帧 相机瞄准的 pos;
     float lastManualRotationTime; // 上次手动 控制相机视角 的时间, 在一段时间内, 禁止 自动系统 介入;
 	Camera regularCamera;
 
+	// 从原始的 重力方向(-y) 到本帧重力方向(任意) 的 "旋转"信息;
+	Quaternion gravityAlignment = Quaternion.identity;
+
+	Quaternion orbitRotation;
 
 	Vector3 CameraHalfExtends 
 	{
@@ -59,29 +69,31 @@ public class OrbitCamera : MonoBehaviour
     {
 		regularCamera = GetComponent<Camera>();
 		focusPoint = focus.position;
-        transform.localRotation = Quaternion.Euler(orbitAngles);
+        transform.localRotation = orbitRotation = Quaternion.Euler(orbitAngles);
 	}
 
 
     void LateUpdate () 
     {
+
+		UpdateGravityAlignment();
         UpdateFocusPoint();
 
-        Quaternion lookRotation;
+        //Quaternion lookRotation;
 		if ( ManualRotation() || AutomaticRotation() ) 
         {
 			ConstrainAngles();
-			lookRotation = Quaternion.Euler(orbitAngles);
+			orbitRotation = Quaternion.Euler(orbitAngles);
 		}
-		else 
-        {
-			lookRotation = transform.localRotation;
-		}
+
+		// right-up旋转, 叠加上 重力修正旋转
+		Quaternion lookRotation = gravityAlignment * orbitRotation;
 
 		Vector3 lookDirection = lookRotation * Vector3.forward;
         Vector3 lookPosition = focusPoint - lookDirection * distance;
 
-
+		// 不能直接使用 focusPoint, 因为 focusPoint 并不正对 小球圆心;
+		// 所以需要在本地再计算一下:
 		Vector3 rectOffset = lookDirection * regularCamera.nearClipPlane; // 从 camera pos 沿着视线前进到 near plane 的这段向量
 		Vector3 rectPosition = lookPosition + rectOffset; // 上述向量在 near plane 上的点;
 		Vector3 castFrom = focus.position; // 小球本帧 pos
@@ -95,8 +107,6 @@ public class OrbitCamera : MonoBehaviour
 		{
 			rectPosition = castFrom + castDirection * hit.distance;
 			lookPosition = rectPosition - rectOffset;
-
-			//lookPosition = focusPoint - lookDirection * (hit.distance + regularCamera.nearClipPlane);
 		}
 
 
@@ -113,6 +123,34 @@ public class OrbitCamera : MonoBehaviour
 		if (maxVerticalAngle < minVerticalAngle) 
         {
 			maxVerticalAngle = minVerticalAngle;
+		}
+	}
+
+
+	void UpdateGravityAlignment () 
+	{
+		// 从 "last aligned up dir" -> "current up dir" 的最小 "旋转";
+		// 再将上面这个 "旋转" 对象, 左乘到 旧的 "旋转"对象 上, 获得本帧 新的 "旋转"对象;
+		Vector3 fromUp = gravityAlignment * Vector3.up;
+		Vector3 toUp = CustomGravity.GetUpAxis(focusPoint);
+
+
+		float dot = Mathf.Clamp(Vector3.Dot(fromUp, toUp), -1f, 1f);
+		float angle = Mathf.Acos(dot) * Mathf.Rad2Deg;
+		float maxAngle = upAlignmentSpeed * Time.deltaTime;
+
+		Quaternion newAlignment = Quaternion.FromToRotation(fromUp, toUp) * gravityAlignment;
+
+		//gravityAlignment = newAlignment;
+		if (angle <= maxAngle) 
+		{
+			gravityAlignment = newAlignment;
+		}
+		else 
+		{
+			gravityAlignment = Quaternion.SlerpUnclamped(
+				gravityAlignment, newAlignment, maxAngle / angle
+			);
 		}
 	}
 
@@ -167,10 +205,18 @@ public class OrbitCamera : MonoBehaviour
 			return false;
 		}
 
-        Vector2 movement = new Vector2(
-			focusPoint.x - previousFocusPoint.x,
-			focusPoint.z - previousFocusPoint.z
-		);
+		// 先计算出 本帧小球的 位移向量; (ws), 注意, 如果重力方向是自定义的, 则这个位移向量可以是任意方向
+		// 对此 位移向量 执行一个 "从 本帧重力方向 到 原始重力方向" 的 "旋转", 
+		// 就能得到: 在本帧重力方向构成的坐标系下的 小球位移向量;
+		Vector3 alignedDelta = Quaternion.Inverse(gravityAlignment) * (focusPoint - previousFocusPoint);
+
+		Vector2 movement = new Vector2(alignedDelta.x, alignedDelta.z);
+
+        // Vector2 movement = new Vector2(
+		// 	focusPoint.x - previousFocusPoint.x,
+		// 	focusPoint.z - previousFocusPoint.z
+		// );
+
 		float movementDeltaSqr = movement.sqrMagnitude; // 距离的平方
 		if (movementDeltaSqr < 0.0001f) 
         {

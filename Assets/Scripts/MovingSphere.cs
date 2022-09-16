@@ -6,13 +6,15 @@ public class MovingSphere : MonoBehaviour
 {
 
     [SerializeField, Range(0f, 100f)]
-	float maxSpeed = 10f;
+	float 	maxSpeed = 10f,
+			maxClimbSpeed = 2f;
 
     [SerializeField, Range(0f, 100f)]
-	float maxAcceleration = 10f;
+	float maxAcceleration = 10f,
+		maxAirAcceleration = 1f, // 在空中的加速度, 直白的说就是跳到空中后, 玩家控制运动的能力
+		maxClimbAcceleration = 20f;
 
-	[SerializeField, Range(0f, 100f)]
-	float maxAirAcceleration = 1f; // 在空中的加速度, 直白的说就是跳到空中后, 玩家控制运动的能力
+	
 
 	[SerializeField, Range(0f, 10f)]
 	float jumpHeight = 2f;
@@ -33,51 +35,79 @@ public class MovingSphere : MonoBehaviour
 	float probeDistance = 1f; // 当物体腾空时, 只 snap 一段距离内的 ground; 
 
 	[SerializeField]
-	LayerMask probeMask = -1;
+	LayerMask 	probeMask = -1,
+				stairsMask = -1,
+				climbMask  = -1;
 
-	[SerializeField]
-	LayerMask stairsMask = -1;
 
 	[SerializeField]
 	Transform playerInputSpace = default; // 绑定 主相机
+
+	[SerializeField, Range(90, 180)]
+	float maxClimbAngle = 140f; // 支持 climb 的最大角度
+
+	[SerializeField]
+	Material normalMaterial = default, 
+			climbingMaterial = default;
 
 	Rigidbody body, 				// 本小球
 			connectedBody, 			// 本帧的 connect plane
 			previousConnectedBody;	// 上帧的 connect plane
 
-    Vector3 velocity, 			// 本帧实际执行的 速度值
-			desiredVelocity, 	// 
-			connectionVelocity;	// 
+	Vector2 playerInput;
+
+
+    Vector3 velocity, 			// 本帧实际执行的 速度值; 位于 ws;
+			connectionVelocity;	// 由 connect plane 带动的速度值, 位于 ws;
+
 	
-	Vector3 contactNormal, steepNormal;
+	Vector3 contactNormal, 
+			steepNormal,
+			climbNormal,
+			lastClimbNormal;
+
 
 	// 重力坐标系 由一个全局系统统一提供:
 	Vector3 upAxis, 	// 在当前 自定义的重力系统下, 的 up 方向;
 			rightAxis, 	// 在当前 自定义的重力系统下, 的 right 方向;
 			forwardAxis;// 在当前 自定义的重力系统下, 的 forward 方向;
 
-	Vector3 connectionWorldPosition, connectionLocalPosition;
 
-	bool desiredJump;
+	Vector3 connectionWorldPosition, 
+			connectionLocalPosition;
+
+	bool desiredJump,
+		desiresClimbing;
 
 	int jumpPhase;
-	int groundContactCount, steepContactCount;
+
+	int groundContactCount, 
+		steepContactCount,
+		climbContactCount;
+
 
 	bool OnGround => groundContactCount > 0;
 	bool OnSteep => steepContactCount > 0;
+	bool Climbing => climbContactCount > 0 && stepsSinceLastJump > 2; // 其实没看懂为啥加这段
 
 
-	float minGroundDotProduct;
-	float minStairsDotProduct;
+	float 	minGroundDotProduct, 
+			minStairsDotProduct,
+			minClimbDotProduct;
+
+	
 	int stepsSinceLastGrounded;	// 只要接触 ground, 此值始终为 0, 一旦离开 ground, 此值开始无限累加 (fixed update)
 	int stepsSinceLastJump;		// 每触发一次跳跃, 此值被清零, 然后无限累加 (fixed update)
 	
+	MeshRenderer meshRenderer;
+
 
 
 	void Awake () 
 	{
 		body = GetComponent<Rigidbody>();
 		body.useGravity = false; // 改用自己实现的 重力系统
+		meshRenderer = GetComponent<MeshRenderer>();
 		OnValidate();
 
 		// 只有在 FixedUpdate() 调用时, 物理系统才会更新 pos, 所以此值过高时, 物体运动就会一卡一卡的;
@@ -90,7 +120,6 @@ public class MovingSphere : MonoBehaviour
     void Update () 
     {
 		// ----------------- 接收 用户输入 -------------------
-		Vector2 playerInput;
         playerInput.x = Input.GetAxis("Horizontal");
 		playerInput.y = Input.GetAxis("Vertical");
         playerInput = Vector2.ClampMagnitude(playerInput, 1f);
@@ -108,13 +137,14 @@ public class MovingSphere : MonoBehaviour
 			forwardAxis = ProjectDirectionOnPlane(Vector3.forward, upAxis);
 		}
 
-		desiredVelocity = new Vector3(playerInput.x, 0f, playerInput.y) * maxSpeed;
 
 		desiredJump |= Input.GetButtonDown("Jump"); // remains true
+		desiresClimbing = Input.GetButton("Climb");
 
-		GetComponent<Renderer>().material.SetColor(
-			"_BaseColor", OnGround ? Color.black : Color.white
-		);
+		// GetComponent<Renderer>().material.SetColor(
+		// 	"_BaseColor", OnGround ? Color.black : Color.white
+		// );
+		meshRenderer.material = Climbing ? climbingMaterial : normalMaterial;
 	}
 
 
@@ -130,8 +160,32 @@ public class MovingSphere : MonoBehaviour
 			Jump( gravity );
 		}
 
-		// 施加 本帧的自定义重力 作用;
-		velocity += gravity * Time.deltaTime;
+
+		if (Climbing) 
+		{
+			// 施加一个指向 climb plane 内部的力, 以支持 小球在经过 凸拐角 时也能抓紧 climb surface;
+			// 乘 0.9 是为了防止被粘死在 凹角处;
+			velocity -= contactNormal * (maxClimbAcceleration * 0.9f * Time.deltaTime);
+		}
+		else if (OnGround && velocity.sqrMagnitude < 0.01f) 
+		{
+			velocity +=
+				contactNormal *
+				(Vector3.Dot(gravity, contactNormal) * Time.deltaTime);
+		}
+		else if (desiresClimbing && OnGround) 
+		{
+			// 若仍在地面, 却按下了 climb 按钮, 意味着玩家马上就要 climb 了;
+			// 其实是 上下两种情况的 力的叠加;
+			velocity +=
+				(gravity - contactNormal * (maxClimbAcceleration * 0.9f)) *
+				Time.deltaTime;
+		}
+		else 
+		{
+			// 施加 本帧的自定义重力 作用;
+			velocity += gravity * Time.deltaTime;
+		}
 
 		body.velocity = velocity;
 		ClearState();
@@ -152,11 +206,14 @@ public class MovingSphere : MonoBehaviour
 
 	void EvaluateCollision (Collision collision) 
 	{
-		float minDot = GetMinDot(collision.gameObject.layer);// 要么是 ground, 要么是 stairs
+		int layer = collision.gameObject.layer;
+		float minDot = GetMinDot(layer);// 要么是 ground, 要么是 stairs
+
 		for (int i = 0; i < collision.contactCount; i++) 
 		{
 			Vector3 normal = collision.GetContact(i).normal;
 			float upDot = Vector3.Dot(upAxis, normal);
+
 			// 确定此平面为 ground 或 stair
 			if (upDot >= minDot) 
 			{
@@ -164,15 +221,30 @@ public class MovingSphere : MonoBehaviour
 				contactNormal += normal;
 				connectedBody = collision.rigidbody;
 			}
-			// 只要这个表面不是绝对向下的, 则都算是 steep 表面;
-			else if (upDot > -0.01f) 
+			else
 			{
-				steepContactCount += 1;
-				steepNormal += normal;
-
-				// 只有在没找到 ground 时, 才把 steep 当作 connectedBody
-				if (groundContactCount == 0) 
+				// 只要这个表面不是绝对向下的, 则都算是 steep 表面;
+				if (upDot > -0.01f) 
 				{
+					steepContactCount += 1;
+					steepNormal += normal;
+
+					// 只有在没找到 ground 时, 才把 steep 当作 connectedBody
+					if (groundContactCount == 0) 
+					{
+						connectedBody = collision.rigidbody;
+					}
+				}
+
+				// 此平面被判定为 climb plane
+				if (
+					desiresClimbing &&
+					upDot >= minClimbDotProduct &&
+					(climbMask & (1 << layer)) != 0 // 过滤掉不支持 climb 的go, 比如 details
+				){
+					climbContactCount += 1;
+					climbNormal += normal;
+					lastClimbNormal = normal;
 					connectedBody = collision.rigidbody;
 				}
 			}
@@ -185,6 +257,7 @@ public class MovingSphere : MonoBehaviour
 	{
 		minGroundDotProduct = Mathf.Cos(maxGroundAngle * Mathf.Deg2Rad);
 		minStairsDotProduct = Mathf.Cos(maxStairsAngle * Mathf.Deg2Rad);
+		minClimbDotProduct = Mathf.Cos(maxClimbAngle * Mathf.Deg2Rad);
 	}
 
 
@@ -193,12 +266,13 @@ public class MovingSphere : MonoBehaviour
 	{
 		stepsSinceLastGrounded += 1;
 		stepsSinceLastJump += 1;
-		velocity = body.velocity; // 这样就不会卡在墙边了;
+		velocity = body.velocity; // body.velocity 是 物理引擎在上次计算出来的, 当上帧撞墙后, 次值会被设为 0, 这样小球就不会一直卡在墙根了;
 
-		// -1- 本帧 正在接触了 ground;
-		// -2- 本帧腾空了, 但被判定为: 需要 snap to ground;
-		// -3- 以上都不是时, 有可能被 卡在缝隙里了, 此时会将缝隙替换为一个 虚拟平面
-		if ( OnGround || SnapToGround() || CheckSteepContacts() ) 
+		// -1- 开启了 climb模式, 且当前正贴在一个 climb plane 上, 此时会把这个 plane 当作 ground;
+		// -2- 本帧 正在接触了 ground;
+		// -3- 本帧腾空了, 但被判定为: 需要 snap to ground;
+		// -4- 以上都不是时, 有可能被 卡在缝隙里了, 此时会将缝隙替换为一个 虚拟平面
+		if ( CheckClimbing() || OnGround || SnapToGround() || CheckSteepContacts() ) 
 		{
 			stepsSinceLastGrounded = 0;
 			if (stepsSinceLastJump > 1) // 新的跳跃之后的 第2帧, (观察 stepsSinceLastJump 的累加位置)
@@ -227,6 +301,7 @@ public class MovingSphere : MonoBehaviour
 
 		Log_In_FixedUpdate(); // tpr
 	}
+
 
 	void UpdateConnectionState () 
 	{
@@ -308,38 +383,59 @@ public class MovingSphere : MonoBehaviour
 	}
 
 
+	// (1)玩家输入的移动需求, (2)connect plane 带着小球一起运动的 移动需求
 	void AdjustVelocity () 
 	{
-		// 沿着本帧 connect plane 的 xz 坐标系;
-		Vector3 xAxis = ProjectDirectionOnPlane(rightAxis,   contactNormal);
-		Vector3 zAxis = ProjectDirectionOnPlane(forwardAxis, contactNormal);
+		float acceleration, speed;
+
+		Vector3 xAxis, zAxis;
+		if (Climbing) 
+		{
+			acceleration = maxClimbAcceleration;
+			speed = maxClimbSpeed;
+			// 沿 climb plane 的右侧为 right
+			// 当前重力系统的 up 为 z
+			xAxis = Vector3.Cross(contactNormal, upAxis);
+			zAxis = upAxis;
+		}
+		else 
+		{
+			acceleration = OnGround ? maxAcceleration : maxAirAcceleration;
+			// 若仍在地面, 却按下了 climb 键, 此时会提前切为 maxClimbSpeed;
+			speed = OnGround && desiresClimbing ? maxClimbSpeed : maxSpeed;
+			// 沿着本帧 connect plane 的 xz 坐标系;
+			xAxis = rightAxis;
+			zAxis = forwardAxis;
+		}
+		xAxis = ProjectDirectionOnPlane(xAxis, contactNormal);
+		zAxis = ProjectDirectionOnPlane(zAxis, contactNormal);
 
 
 		// 为何是 反方向速度呢, 因为这个值 要在后续运算中 "被减掉"
         // 用这种不够直观的方式, 来叠加 "下方活动地面" 的运动速度
-		Vector3 relativeVelocity = velocity - connectionVelocity;
+		Vector3 relativeVelocity = velocity - connectionVelocity; // ws
 
 		float currentX = Vector3.Dot(relativeVelocity, xAxis);
 		float currentZ = Vector3.Dot(relativeVelocity, zAxis);
 
-		float acceleration = OnGround ? maxAcceleration : maxAirAcceleration;
 		float maxSpeedChange = acceleration * Time.deltaTime;
 
-		float newX = Mathf.MoveTowards(currentX, desiredVelocity.x, maxSpeedChange);
-		float newZ = Mathf.MoveTowards(currentZ, desiredVelocity.z, maxSpeedChange);
+		float newX = Mathf.MoveTowards(currentX, playerInput.x * speed, maxSpeedChange);
+		float newZ = Mathf.MoveTowards(currentZ, playerInput.y * speed, maxSpeedChange);
 
 		velocity += xAxis * (newX - currentX) + 
 					zAxis * (newZ - currentZ);
-
 	}
+
 
 	void ClearState () 
 	{
-		groundContactCount = steepContactCount = 0;
-		contactNormal = steepNormal = connectionVelocity = Vector3.zero;
+		groundContactCount = steepContactCount = climbContactCount  = 0;
+		contactNormal = steepNormal = climbNormal = connectionVelocity = Vector3.zero;
 		previousConnectedBody = connectedBody;
 		connectedBody = null;
 	}
+
 
 	// 只有在本帧腾空时, 本函数才会被调用
 	// ret: 是否发生了: snap to ground;
@@ -389,6 +485,7 @@ public class MovingSphere : MonoBehaviour
 		return true;
 	}
 
+
 	float GetMinDot (int layer) 
 	{
 		return (stairsMask & (1 << layer)) == 0 ?
@@ -410,6 +507,32 @@ public class MovingSphere : MonoBehaviour
 				contactNormal = steepNormal;
 				return true;
 			}
+		}
+		return false;
+	}
+
+
+	bool CheckClimbing () 
+	{
+		if (Climbing) 
+		{
+			if (climbContactCount > 1) 
+			{
+				climbNormal.Normalize();
+				float upDot = Vector3.Dot(upAxis, climbNormal);
+
+				
+				if (upDot >= minGroundDotProduct) 
+				{
+					// 很可能小球在一个 缝隙中, 两侧都是 climb surface.
+					// 此时只会抓住某一个 climb surface, 以支持 climb 运动
+					climbNormal = lastClimbNormal;
+				}
+			}
+
+			groundContactCount = 1;
+			contactNormal = climbNormal;
+			return true;
 		}
 		return false;
 	}

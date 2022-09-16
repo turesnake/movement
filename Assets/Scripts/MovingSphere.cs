@@ -41,12 +41,21 @@ public class MovingSphere : MonoBehaviour
 	[SerializeField]
 	Transform playerInputSpace = default; // 绑定 主相机
 
-	Rigidbody body, connectedBody, previousConnectedBody;
-    Vector3 velocity, desiredVelocity, connectionVelocity;
+	Rigidbody body, 				// 本小球
+			connectedBody, 			// 本帧的 connect plane
+			previousConnectedBody;	// 上帧的 connect plane
+
+    Vector3 velocity, 			// 本帧实际执行的 速度值
+			desiredVelocity, 	// 
+			connectionVelocity;	// 
 	
 	Vector3 contactNormal, steepNormal;
 
-	Vector3 upAxis, rightAxis, forwardAxis;
+	// 重力坐标系 由一个全局系统统一提供:
+	Vector3 upAxis, 	// 在当前 自定义的重力系统下, 的 up 方向;
+			rightAxis, 	// 在当前 自定义的重力系统下, 的 right 方向;
+			forwardAxis;// 在当前 自定义的重力系统下, 的 forward 方向;
+
 	Vector3 connectionWorldPosition, connectionLocalPosition;
 
 	bool desiredJump;
@@ -88,13 +97,13 @@ public class MovingSphere : MonoBehaviour
 
 		if (playerInputSpace) 
 		{
-			// 实现 主观视角的 运动控制;
+			// 主观视角的运动控制; 使用 相机的 right 和 forward;
 			rightAxis   = ProjectDirectionOnPlane(playerInputSpace.right,   upAxis);
 			forwardAxis = ProjectDirectionOnPlane(playerInputSpace.forward, upAxis);
 		}
 		else 
 		{
-			// 客观视角的运动控制
+			// 客观视角的运动控制, 使用 ws 中的 right 和 forward;
 			rightAxis   = ProjectDirectionOnPlane(Vector3.right,   upAxis);
 			forwardAxis = ProjectDirectionOnPlane(Vector3.forward, upAxis);
 		}
@@ -111,7 +120,7 @@ public class MovingSphere : MonoBehaviour
 
 	void FixedUpdate () 
 	{
-		Vector3 gravity = CustomGravity.GetGravity(body.position, out upAxis);
+		Vector3 gravity = CustomGravity.GetGravity(body.position, out upAxis); // 每帧都更新
 		UpdateState();
 		AdjustVelocity();
 
@@ -139,6 +148,38 @@ public class MovingSphere : MonoBehaviour
 	{
 		EvaluateCollision(collision);
 	}
+
+
+	void EvaluateCollision (Collision collision) 
+	{
+		float minDot = GetMinDot(collision.gameObject.layer);// 要么是 ground, 要么是 stairs
+		for (int i = 0; i < collision.contactCount; i++) 
+		{
+			Vector3 normal = collision.GetContact(i).normal;
+			float upDot = Vector3.Dot(upAxis, normal);
+			// 确定此平面为 ground 或 stair
+			if (upDot >= minDot) 
+			{
+				groundContactCount += 1;
+				contactNormal += normal;
+				connectedBody = collision.rigidbody;
+			}
+			// 只要这个表面不是绝对向下的, 则都算是 steep 表面;
+			else if (upDot > -0.01f) 
+			{
+				steepContactCount += 1;
+				steepNormal += normal;
+
+				// 只有在没找到 ground 时, 才把 steep 当作 connectedBody
+				if (groundContactCount == 0) 
+				{
+					connectedBody = collision.rigidbody;
+				}
+			}
+
+		}
+	}
+
 
 	void OnValidate () 
 	{
@@ -195,13 +236,18 @@ public class MovingSphere : MonoBehaviour
 		{
 			// 本帧 接触点的 运动向量
 			Vector3 connectionMovement =
-				connectedBody.position - connectionWorldPosition;
+				connectedBody.transform.TransformPoint(connectionLocalPosition)
+				- connectionWorldPosition;
 			connectionVelocity = connectionMovement / Time.deltaTime;
 		}
-
 		// 否则, 若接触的不是同一个 connext plane, 则让 connectionVelocity 维持为 0;
 
-		connectionWorldPosition = connectedBody.position;
+		// 直接使用 小球的 posws 当作 接触点pos; (一种简化)
+		connectionWorldPosition = body.position;
+		// 转换出 上述点 在 connect 平面的 os 坐标系里的表达'
+		connectionLocalPosition = connectedBody.transform.InverseTransformPoint(
+			connectionWorldPosition
+		);
 	}
 
 
@@ -252,34 +298,7 @@ public class MovingSphere : MonoBehaviour
 	}
 
 
-	void EvaluateCollision (Collision collision) 
-	{
-		float minDot = GetMinDot(collision.gameObject.layer);
-		for (int i = 0; i < collision.contactCount; i++) 
-		{
-			Vector3 normal = collision.GetContact(i).normal;
-			float upDot = Vector3.Dot(upAxis, normal);
-			// 确定此平面为 ground 或 stair
-			if (upDot >= minDot) 
-			{
-				groundContactCount += 1;
-				contactNormal += normal;
-				connectedBody = collision.rigidbody;
-			}
-			// 只要这个表面不是绝对向下的, 则都算是 steep 表面;
-			else if (upDot > -0.01f) 
-			{
-				steepContactCount += 1;
-				steepNormal += normal;
-
-				// 只有在没找到 ground 时, 才把 steep 当作 connectedBody
-				if (groundContactCount == 0) {
-					connectedBody = collision.rigidbody;
-				}
-			}
-
-		}
-	}
+	
 
 
 	// 获得 vector 沿着 normal 代表的表面 的分量; 
@@ -291,7 +310,8 @@ public class MovingSphere : MonoBehaviour
 
 	void AdjustVelocity () 
 	{
-		Vector3 xAxis = ProjectDirectionOnPlane(rightAxis, contactNormal);
+		// 沿着本帧 connect plane 的 xz 坐标系;
+		Vector3 xAxis = ProjectDirectionOnPlane(rightAxis,   contactNormal);
 		Vector3 zAxis = ProjectDirectionOnPlane(forwardAxis, contactNormal);
 
 

@@ -102,7 +102,7 @@ public class OrbitCamera : MonoBehaviour
 		Vector3 castDirection = castLine / castDistance; // 归一化
 
 		// 避免相机进入墙体
-		// details 无需被 判断为墙体, 否则相机会频繁地推拉
+		// details 无需被 判 断为墙体, 否则相机会频繁地推拉
 		if (Physics.BoxCast(castFrom, CameraHalfExtends, castDirection, out RaycastHit hit, lookRotation, castDistance, obstructionMask )) 
 		{
 			rectPosition = castFrom + castDirection * hit.distance;

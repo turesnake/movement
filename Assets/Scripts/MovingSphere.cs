@@ -50,24 +50,26 @@ public class MovingSphere : MonoBehaviour
 	Material normalMaterial = default, 
 			climbingMaterial = default;
 
+	// connect surface 的目的是为了让 小球跟着这个平面 一起移动;
 	Rigidbody body, 				// 本小球
-			connectedBody, 			// 本帧的 connect plane
-			previousConnectedBody;	// 上帧的 connect plane
+			connectedBody, 			// 本帧的 connect surface
+			previousConnectedBody;	// 上帧的 connect surface
 
 	Vector2 playerInput;
 
 
     Vector3 velocity, 			// 本帧实际执行的 速度值; 位于 ws;
-			connectionVelocity;	// 由 connect plane 带动的速度值, 位于 ws;
+			connectionVelocity;	// 由 connect surface 带动的速度值, 位于 ws;
 
 	
 	Vector3 contactNormal, 
-			steepNormal,
+			steepNormal, 
 			climbNormal,
 			lastClimbNormal;
 
 
 	// 重力坐标系 由一个全局系统统一提供:
+	// forward 方向 由 camera 提供
 	Vector3 upAxis, 	// 在当前 自定义的重力系统下, 的 up 方向;
 			rightAxis, 	// 在当前 自定义的重力系统下, 的 right 方向;
 			forwardAxis;// 在当前 自定义的重力系统下, 的 forward 方向;
@@ -79,7 +81,7 @@ public class MovingSphere : MonoBehaviour
 	bool desiredJump,
 		desiresClimbing;
 
-	int jumpPhase;
+	int jumpPhase; // 服务于 空中N段跳
 
 	int groundContactCount, 
 		steepContactCount,
@@ -163,7 +165,7 @@ public class MovingSphere : MonoBehaviour
 
 		if (Climbing) 
 		{
-			// 施加一个指向 climb plane 内部的力, 以支持 小球在经过 凸拐角 时也能抓紧 climb surface;
+			// 施加一个指向 climb surface 内部的力, 以支持 小球在经过 凸拐角 时也能抓紧 climb surface;
 			// 乘 0.9 是为了防止被粘死在 凹角处;
 			velocity -= contactNormal * (maxClimbAcceleration * 0.9f * Time.deltaTime);
 		}
@@ -196,7 +198,6 @@ public class MovingSphere : MonoBehaviour
 	{
 		EvaluateCollision(collision);
 	}
-
 
 	void OnCollisionStay (Collision collision) 
 	{
@@ -236,7 +237,7 @@ public class MovingSphere : MonoBehaviour
 					}
 				}
 
-				// 此平面被判定为 climb plane
+				// 此平面被判定为 climb surface
 				if (
 					desiresClimbing &&
 					upDot >= minClimbDotProduct &&
@@ -268,7 +269,7 @@ public class MovingSphere : MonoBehaviour
 		stepsSinceLastJump += 1;
 		velocity = body.velocity; // body.velocity 是 物理引擎在上次计算出来的, 当上帧撞墙后, 次值会被设为 0, 这样小球就不会一直卡在墙根了;
 
-		// -1- 开启了 climb模式, 且当前正贴在一个 climb plane 上, 此时会把这个 plane 当作 ground;
+		// -1- 开启了 climb模式, 且当前正贴在一个 climb surface 上, 此时会把这个 surface 当作 ground;
 		// -2- 本帧 正在接触了 ground;
 		// -3- 本帧腾空了, 但被判定为: 需要 snap to ground;
 		// -4- 以上都不是时, 有可能被 卡在缝隙里了, 此时会将缝隙替换为一个 虚拟平面
@@ -315,7 +316,7 @@ public class MovingSphere : MonoBehaviour
 				- connectionWorldPosition;
 			connectionVelocity = connectionMovement / Time.deltaTime;
 		}
-		// 否则, 若接触的不是同一个 connext plane, 则让 connectionVelocity 维持为 0;
+		// 否则, 若接触的不是同一个 connext surface, 则让 connectionVelocity 维持为 0;
 
 		// 直接使用 小球的 posws 当作 接触点pos; (一种简化)
 		connectionWorldPosition = body.position;
@@ -383,7 +384,7 @@ public class MovingSphere : MonoBehaviour
 	}
 
 
-	// (1)玩家输入的移动需求, (2)connect plane 带着小球一起运动的 移动需求
+	// (1)玩家输入的移动需求, (2)connect surface 带着小球一起运动的 移动需求
 	void AdjustVelocity () 
 	{
 		float acceleration, speed;
@@ -393,7 +394,7 @@ public class MovingSphere : MonoBehaviour
 		{
 			acceleration = maxClimbAcceleration;
 			speed = maxClimbSpeed;
-			// 沿 climb plane 的右侧为 right
+			// 沿 climb surface 的右侧为 right
 			// 当前重力系统的 up 为 z
 			xAxis = Vector3.Cross(contactNormal, upAxis);
 			zAxis = upAxis;
@@ -403,7 +404,7 @@ public class MovingSphere : MonoBehaviour
 			acceleration = OnGround ? maxAcceleration : maxAirAcceleration;
 			// 若仍在地面, 却按下了 climb 键, 此时会提前切为 maxClimbSpeed;
 			speed = OnGround && desiresClimbing ? maxClimbSpeed : maxSpeed;
-			// 沿着本帧 connect plane 的 xz 坐标系;
+			// 沿着本帧 connect surface 的 xz 坐标系;
 			xAxis = rightAxis;
 			zAxis = forwardAxis;
 		}
@@ -451,20 +452,20 @@ public class MovingSphere : MonoBehaviour
 
 		// 速度过大时, 放弃 snap
 		float speed = velocity.magnitude;
-		if (speed > maxSnapSpeed) 
+		if (speed > maxSnapSpeed)
 		{
 			return false;
 		}
 
 		// 若球体下方没有 ground, 放弃 snap
-		if (!Physics.Raycast(body.position, -upAxis, out RaycastHit hit, probeDistance, probeMask)) 
+		if (!Physics.Raycast(body.position, -upAxis, out RaycastHit hit, probeDistance, probeMask))
 		{
 			return false;
 		}
 
 		// 检测到的 下方平面 若太陡峭, 不属于 ground, 放弃 snap
 		float upDot = Vector3.Dot(upAxis, hit.normal);
-		if (upDot < GetMinDot(hit.collider.gameObject.layer)) 
+		if (upDot < GetMinDot(hit.collider.gameObject.layer))
 		{
 			return false;
 		}
@@ -475,7 +476,7 @@ public class MovingSphere : MonoBehaviour
 		float dot = Vector3.Dot(velocity, hit.normal);
 		// 只有当 velocity 方向远离 new ground 时, 才执行下方的 velocity 贴合修正操作;
 		// 否则就让 velocity 继续撞向 new ground;
-		if (dot > 0f) 
+		if (dot > 0f)
 		{
 			velocity = (velocity - hit.normal * dot).normalized * speed;
 		}

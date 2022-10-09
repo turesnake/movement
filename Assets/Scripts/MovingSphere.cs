@@ -171,9 +171,8 @@ public class MovingSphere : MonoBehaviour
 		}
 		else if (OnGround && velocity.sqrMagnitude < 0.01f) 
 		{
-			velocity +=
-				contactNormal *
-				(Vector3.Dot(gravity, contactNormal) * Time.deltaTime);
+			// 防止小球在 浅斜面上滑坡
+			velocity += contactNormal * (Vector3.Dot(gravity, contactNormal) * Time.deltaTime);
 		}
 		else if (desiresClimbing && OnGround) 
 		{
@@ -521,7 +520,6 @@ public class MovingSphere : MonoBehaviour
 			{
 				climbNormal.Normalize();
 				float upDot = Vector3.Dot(upAxis, climbNormal);
-
 				
 				if (upDot >= minGroundDotProduct) 
 				{
